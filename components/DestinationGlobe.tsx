@@ -81,7 +81,6 @@ const KNOWN_COORDS: Record<string, [number, number]> = {
   doha: [51.53, 25.29],
   riyadh: [46.72, 24.69],
   'abu dhabi': [54.37, 24.47],
-  zurich: [8.54, 47.38],
   geneva: [6.14, 46.20],
   lagos: [3.39, 6.45],
   accra: [-0.19, 5.56],

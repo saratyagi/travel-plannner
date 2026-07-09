@@ -1,6 +1,6 @@
 'use client';
 
-import { useState, useCallback, useRef } from 'react';
+import { useState, useCallback, useRef, useEffect } from 'react';
 import dynamic from 'next/dynamic';
 import { AgentName, AgentState, Place } from '@/types';
 import AgentProgress from '@/components/AgentProgress';
@@ -19,6 +19,7 @@ const INITIAL_AGENTS: Record<AgentName, AgentState> = {
 };
 
 type AppStatus = 'idle' | 'planning' | 'clarifying' | 'done' | 'error';
+type PlanningPhase = 'globe' | 'plane' | null;
 
 const EXAMPLE_TRIPS = [
   'I want to fly from New York to Tokyo for 10 days in August 2026, economy class, 2 travelers.',
@@ -35,7 +36,7 @@ function extractDestination(text: string): string | null {
   if (m?.[1]?.trim()) return m[1].trim();
 
   // "trip/travel/fly/going/head to Y"
-  m = text.match(/\b(?:trip|travel|fly(?:ing)?|going|head(?:ing)?|visit(?:ing)?|explore|explore)\s+(?:from\s+\S+\s+)?to\s+([A-Z][A-Za-z\s]+?)(?=\s+for\b|\s+in\b|\s+on\b|\s+,|,|\.|$)/i);
+  m = text.match(/\b(?:trip|travel|fly(?:ing)?|going|head(?:ing)?|visit(?:ing)?|explore)\s+(?:from\s+\S+\s+)?to\s+([A-Z][A-Za-z\s]+?)(?=\s+for\b|\s+in\b|\s+on\b|\s+,|,|\.|$)/i);
   if (m?.[1]?.trim()) return m[1].trim();
 
   // plain "to Y" with capital letter
@@ -51,13 +52,17 @@ function extractDestination(text: string): string | null {
 
 export default function Home() {
   const [input, setInput] = useState('');
-  const [clarificationAnswer, setClarificationAnswer] = useState('');
+  // Upfront form fields — collected before submitting
   const [startDate, setStartDate] = useState('');
   const [endDate, setEndDate] = useState('');
+  const [travelers, setTravelers] = useState(2);
+
   const [status, setStatus] = useState<AppStatus>('idle');
+  const [planningPhase, setPlanningPhase] = useState<PlanningPhase>(null);
   const [agents, setAgents] = useState<Record<AgentName, AgentState>>(INITIAL_AGENTS);
   const [report, setReport] = useState('');
   const [clarification, setClarification] = useState('');
+  const [clarificationAnswer, setClarificationAnswer] = useState('');
   const [clarificationMissingFields, setClarificationMissingFields] = useState<string[]>([]);
   const [partialParams, setPartialParams] = useState<Record<string, unknown> | null>(null);
   const [conversationHistory, setConversationHistory] = useState<string | null>(null);
@@ -65,8 +70,18 @@ export default function Home() {
   const [places, setPlaces] = useState<Place[]>([]);
   const [attractionsLoading, setAttractionsLoading] = useState(false);
   const [error, setError] = useState('');
+
   const textareaRef = useRef<HTMLTextAreaElement>(null);
   const clarificationRef = useRef<HTMLTextAreaElement>(null);
+  const planningStartRef = useRef<number>(0);
+  const showReportTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+
+  // Globe phase automatically transitions to plane after 3 seconds
+  useEffect(() => {
+    if (planningPhase !== 'globe') return;
+    const t = setTimeout(() => setPlanningPhase('plane'), 3000);
+    return () => clearTimeout(t);
+  }, [planningPhase]);
 
   const updateAgent = useCallback((agent: AgentName, update: Partial<AgentState>) => {
     setAgents((prev) => ({ ...prev, [agent]: { ...prev[agent], ...update } }));
@@ -78,12 +93,15 @@ export default function Home() {
     history?: string | null,
   ) => {
     setStatus('planning');
+    setPlanningPhase('globe');
+    planningStartRef.current = Date.now();
     setAgents(INITIAL_AGENTS);
     setReport('');
     setClarification('');
     setError('');
     setPlaces([]);
     setAttractionsLoading(true);
+    if (showReportTimerRef.current) clearTimeout(showReportTimerRef.current);
 
     try {
       for await (const event of streamTripPlan(message, params, history)) {
@@ -93,26 +111,34 @@ export default function Home() {
             break;
 
           case 'trip_params':
-            // Confirm/refine destination from authoritative backend response
             if (event.data.destination) setDestination(event.data.destination);
             break;
 
           case 'clarification':
+            setPlanningPhase(null);
+            if (showReportTimerRef.current) clearTimeout(showReportTimerRef.current);
             setClarification(event.message);
             setClarificationMissingFields(event.missing_fields ?? []);
             setPartialParams(event.partial_params ?? null);
             setConversationHistory(event.conversation_history ?? null);
             setClarificationAnswer('');
-            setStartDate('');
-            setEndDate('');
             setStatus('clarifying');
             setTimeout(() => clarificationRef.current?.focus(), 50);
             return;
 
-          case 'complete':
-            setReport(event.report);
-            setStatus('done');
+          case 'complete': {
+            // Hold results until both animations have played (min 4.5 s: 3 s globe + 1.5 s plane)
+            const elapsed = Date.now() - planningStartRef.current;
+            const MIN_MS = 4500;
+            const delay = Math.max(0, MIN_MS - elapsed);
+            const reportText = event.report;
+            showReportTimerRef.current = setTimeout(() => {
+              setReport(reportText);
+              setStatus('done');
+              setPlanningPhase(null);
+            }, delay);
             break;
+          }
 
           case 'attractions':
             setPlaces(event.places ?? []);
@@ -120,6 +146,8 @@ export default function Home() {
             break;
 
           case 'error':
+            setPlanningPhase(null);
+            if (showReportTimerRef.current) clearTimeout(showReportTimerRef.current);
             setError(event.message);
             setAttractionsLoading(false);
             setStatus('error');
@@ -127,6 +155,8 @@ export default function Home() {
         }
       }
     } catch (err) {
+      setPlanningPhase(null);
+      if (showReportTimerRef.current) clearTimeout(showReportTimerRef.current);
       setError(err instanceof Error ? err.message : 'Unknown error. Is the backend running?');
       setStatus('error');
     } finally {
@@ -136,15 +166,21 @@ export default function Home() {
 
   const handleSubmit = useCallback(() => {
     if (!input.trim() || status === 'planning') return;
-    setPartialParams(null);
     setConversationHistory(null);
-    // Extract destination immediately so globe appears at once
+
     const detected = extractDestination(input.trim());
     setDestination(detected);
-    runStream(input.trim());
-  }, [input, status, runStream]);
 
-  // Show date pickers only when dates is the sole hard-missing field.
+    // Pass upfront form values as partial params so the backend doesn't need to ask for them
+    const partial: Record<string, unknown> = { travelers };
+    if (startDate) partial.start_date = startDate;
+    if (endDate) partial.end_date = endDate;
+    setPartialParams(partial);
+
+    runStream(input.trim(), partial);
+  }, [input, startDate, endDate, travelers, status, runStream]);
+
+  // Only show date pickers in clarification when dates are the sole hard-missing field.
   // When origin is also missing, show a text area so the user can answer both at once.
   const isDateClarification =
     clarificationMissingFields.includes('dates') &&
@@ -162,11 +198,14 @@ export default function Home() {
   }, [status, isDateClarification, startDate, endDate, clarificationAnswer, partialParams, conversationHistory, runStream]);
 
   const handleReset = () => {
+    if (showReportTimerRef.current) clearTimeout(showReportTimerRef.current);
     setStatus('idle');
     setInput('');
     setClarificationAnswer('');
     setStartDate('');
     setEndDate('');
+    setTravelers(2);
+    setPlanningPhase(null);
     setAgents(INITIAL_AGENTS);
     setReport('');
     setClarification('');
@@ -214,6 +253,7 @@ export default function Home() {
             </div>
 
             <div className="bg-white/5 border border-white/10 rounded-2xl p-6 mb-6">
+              {/* Destination / free-form text */}
               <textarea
                 ref={textareaRef}
                 value={input}
@@ -221,22 +261,93 @@ export default function Home() {
                 onKeyDown={(e) => {
                   if (e.key === 'Enter' && (e.ctrlKey || e.metaKey)) handleSubmit();
                 }}
-                placeholder="E.g. Plan a trip to Tokyo… (you can be vague — we'll ask follow-up questions)"
-                className="w-full bg-transparent text-white placeholder-white/30 text-base resize-none outline-none min-h-[100px]"
+                placeholder="E.g. I want to go from Mumbai to Paris — or just say 'Paris' and we'll ask the rest"
+                className="w-full bg-transparent text-white placeholder-white/30 text-base resize-none outline-none min-h-[80px]"
                 autoFocus
               />
-              <div className="flex items-center justify-between mt-4 pt-4 border-t border-white/10">
-                <span className="text-white/30 text-xs">Ctrl+Enter to submit</span>
-                <button
-                  onClick={handleSubmit}
-                  disabled={!input.trim()}
-                  className="px-6 py-2.5 bg-blue-600 hover:bg-blue-500 disabled:bg-white/10 disabled:cursor-not-allowed text-white font-semibold rounded-xl transition-all text-sm"
-                >
-                  Plan My Trip →
-                </button>
+
+              {/* ── Calendar: departure + return date pickers ────────── */}
+              <div className="mt-4 pt-4 border-t border-white/10">
+                <p className="text-white/40 text-xs mb-3">
+                  Travel dates <span className="text-white/25">(optional — we&apos;ll ask if you skip)</span>
+                </p>
+                <div className="grid grid-cols-2 gap-4">
+                  <div>
+                    <label className="text-white/50 text-xs mb-1.5 block">Departure date</label>
+                    <input
+                      type="date"
+                      value={startDate}
+                      min={TODAY}
+                      onChange={(e) => {
+                        setStartDate(e.target.value);
+                        if (endDate && e.target.value > endDate) setEndDate('');
+                      }}
+                      className="w-full bg-slate-800 border border-white/20 text-white rounded-xl px-4 py-3 text-sm outline-none focus:border-blue-500 transition-colors cursor-pointer"
+                      style={{ colorScheme: 'dark' }}
+                    />
+                  </div>
+                  <div>
+                    <label className="text-white/50 text-xs mb-1.5 block">Return date</label>
+                    <input
+                      type="date"
+                      value={endDate}
+                      min={startDate || TODAY}
+                      onChange={(e) => setEndDate(e.target.value)}
+                      className="w-full bg-slate-800 border border-white/20 text-white rounded-xl px-4 py-3 text-sm outline-none focus:border-blue-500 transition-colors cursor-pointer"
+                      style={{ colorScheme: 'dark' }}
+                    />
+                  </div>
+                </div>
+                {startDate && endDate && (
+                  <p className="text-white/40 text-xs mt-2 text-center">
+                    {Math.round(
+                      (new Date(endDate).getTime() - new Date(startDate).getTime()) / 86400000
+                    )}{' '}
+                    nights
+                  </p>
+                )}
+              </div>
+
+              {/* ── Travelers counter + submit ────────────────────────── */}
+              <div className="mt-4 pt-4 border-t border-white/10 flex items-center justify-between flex-wrap gap-4">
+                <div className="flex items-center gap-3">
+                  <span className="text-white/50 text-sm">Travelers</span>
+                  <div className="flex items-center gap-2">
+                    <button
+                      type="button"
+                      onClick={() => setTravelers((n) => Math.max(1, n - 1))}
+                      className="w-8 h-8 rounded-full bg-white/10 hover:bg-white/20 text-white text-lg font-semibold flex items-center justify-center transition-colors select-none"
+                    >
+                      −
+                    </button>
+                    <span className="text-white font-semibold text-lg w-7 text-center tabular-nums">
+                      {travelers}
+                    </span>
+                    <button
+                      type="button"
+                      onClick={() => setTravelers((n) => Math.min(20, n + 1))}
+                      className="w-8 h-8 rounded-full bg-white/10 hover:bg-white/20 text-white text-lg font-semibold flex items-center justify-center transition-colors select-none"
+                    >
+                      +
+                    </button>
+                  </div>
+                  <span className="text-white/40 text-sm">{travelers === 1 ? 'person' : 'people'}</span>
+                </div>
+
+                <div className="flex items-center gap-4">
+                  <span className="text-white/30 text-xs hidden sm:block">Ctrl+Enter to submit</span>
+                  <button
+                    onClick={handleSubmit}
+                    disabled={!input.trim()}
+                    className="px-6 py-2.5 bg-blue-600 hover:bg-blue-500 disabled:bg-white/10 disabled:cursor-not-allowed text-white font-semibold rounded-xl transition-all text-sm"
+                  >
+                    Plan My Trip →
+                  </button>
+                </div>
               </div>
             </div>
 
+            {/* Example queries */}
             <div>
               <p className="text-white/40 text-xs mb-3 text-center">Try an example</p>
               <div className="grid gap-2">
@@ -257,58 +368,75 @@ export default function Home() {
         {/* ── PLANNING ───────────────────────────────────────────────── */}
         {status === 'planning' && (
           <div className="animate-fade-in">
-            {/* Plane animation */}
-            <div className="relative w-full h-20 mb-8 overflow-hidden">
-              <div className="absolute inset-0 flex items-center">
-                {[10, 30, 55, 75, 90].map((left, i) => (
-                  <div
-                    key={i}
-                    className="absolute text-white/10 text-4xl select-none"
-                    style={{
-                      left: `${left}%`,
-                      top: `${20 + (i % 3) * 20}%`,
-                      animation: `cloudDrift ${6 + i * 1.5}s linear infinite`,
-                    }}
-                  >
-                    ☁
+
+            {/* PHASE 1 — Globe marks the destination (3 s) */}
+            {planningPhase === 'globe' && (
+              <div className="flex flex-col items-center justify-center min-h-[420px]">
+                <p className="text-white/40 text-xs tracking-widest uppercase mb-2">Finding your destination</p>
+                <p className="text-white/70 text-base italic mb-10 max-w-lg text-center line-clamp-2">
+                  &ldquo;{input}&rdquo;
+                </p>
+                {destination && <DestinationGlobe destination={destination} />}
+              </div>
+            )}
+
+            {/* PHASE 2 — Plane flies while agents work */}
+            {planningPhase === 'plane' && (
+              <div>
+                {/* Plane + contrail + clouds */}
+                <div className="relative w-full h-20 mb-8 overflow-hidden">
+                  <div className="absolute inset-0 flex items-center">
+                    {[10, 30, 55, 75, 90].map((left, i) => (
+                      <div
+                        key={i}
+                        className="absolute text-white/10 text-4xl select-none"
+                        style={{
+                          left: `${left}%`,
+                          top: `${20 + (i % 3) * 20}%`,
+                          animation: `cloudDrift ${6 + i * 1.5}s linear infinite`,
+                        }}
+                      >
+                        ☁
+                      </div>
+                    ))}
                   </div>
-                ))}
-              </div>
-              <div
-                className="absolute top-1/2 left-0 h-0.5 w-full"
-                style={{
-                  background: 'linear-gradient(to right, transparent, rgba(147,197,253,0.3), transparent)',
-                  animation: 'trailFade 3s ease-in-out infinite',
-                }}
-              />
-              <div
-                className="absolute top-1/2 -translate-y-1/2 text-4xl select-none"
-                style={{ animation: 'flyPlane 3s ease-in-out infinite' }}
-              >
-                ✈️
-              </div>
-            </div>
-
-            {/* Globe + agents side by side */}
-            <div className="flex flex-col lg:flex-row gap-10 items-center lg:items-start justify-center">
-              {/* Globe — always shown in planning (destination may be null briefly) */}
-              {destination && (
-                <div className="flex-shrink-0">
-                  <DestinationGlobe destination={destination} />
+                  <div
+                    className="absolute top-1/2 left-0 h-0.5 w-full"
+                    style={{
+                      background:
+                        'linear-gradient(to right, transparent, rgba(147,197,253,0.3), transparent)',
+                      animation: 'trailFade 3s ease-in-out infinite',
+                    }}
+                  />
+                  <div
+                    className="absolute top-1/2 -translate-y-1/2 text-4xl select-none"
+                    style={{ animation: 'flyPlane 3s ease-in-out infinite' }}
+                  >
+                    ✈️
+                  </div>
                 </div>
-              )}
 
-              {/* Agent progress */}
-              <div className="flex-1 min-w-0 w-full">
-                <div className="mb-6">
-                  <p className="text-white/50 text-sm mb-1 text-center lg:text-left">Researching your trip</p>
-                  <p className="text-white/70 text-sm italic line-clamp-2 text-center lg:text-left">
-                    &ldquo;{input}&rdquo;
-                  </p>
+                {/* Globe (still showing) + agent progress cards */}
+                <div className="flex flex-col lg:flex-row gap-10 items-center lg:items-start justify-center">
+                  {destination && (
+                    <div className="flex-shrink-0">
+                      <DestinationGlobe destination={destination} />
+                    </div>
+                  )}
+                  <div className="flex-1 min-w-0 w-full">
+                    <div className="mb-6">
+                      <p className="text-white/50 text-sm mb-1 text-center lg:text-left">
+                        Researching your trip
+                      </p>
+                      <p className="text-white/70 text-sm italic line-clamp-2 text-center lg:text-left">
+                        &ldquo;{input}&rdquo;
+                      </p>
+                    </div>
+                    <AgentProgress agents={agents} />
+                  </div>
                 </div>
-                <AgentProgress agents={agents} />
               </div>
-            </div>
+            )}
           </div>
         )}
 
@@ -324,7 +452,6 @@ export default function Home() {
                 </div>
               </div>
 
-              {/* Date pickers for date clarification */}
               {isDateClarification ? (
                 <div className="space-y-4 mb-4">
                   <div className="grid grid-cols-2 gap-4">
@@ -356,12 +483,14 @@ export default function Home() {
                   </div>
                   {startDate && endDate && (
                     <p className="text-white/40 text-xs text-center">
-                      {Math.round((new Date(endDate).getTime() - new Date(startDate).getTime()) / 86400000)} nights
+                      {Math.round(
+                        (new Date(endDate).getTime() - new Date(startDate).getTime()) / 86400000
+                      )}{' '}
+                      nights
                     </p>
                   )}
                 </div>
               ) : (
-                /* Text input for all other questions */
                 <div className="bg-white/5 border border-white/10 rounded-xl p-4 mb-4">
                   <textarea
                     ref={clarificationRef}
@@ -389,7 +518,9 @@ export default function Home() {
                   </button>
                   <button
                     onClick={handleClarificationSubmit}
-                    disabled={isDateClarification ? (!startDate || !endDate) : !clarificationAnswer.trim()}
+                    disabled={
+                      isDateClarification ? !startDate || !endDate : !clarificationAnswer.trim()
+                    }
                     className="px-6 py-2.5 bg-blue-600 hover:bg-blue-500 disabled:bg-white/10 disabled:cursor-not-allowed text-white font-semibold rounded-xl transition-all text-sm"
                   >
                     Continue →
