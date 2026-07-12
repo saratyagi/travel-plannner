@@ -79,7 +79,7 @@ async def search_flights(trip: TripRequest) -> list:
         f"Return a JSON array of FlightOption objects."
     )
 
-    raw = await run_agent(FLIGHT_SYSTEM, prompt, use_tools=True, max_tokens=4096, fast=False, max_tool_iterations=2)
+    raw = await run_agent(FLIGHT_SYSTEM, prompt, use_tools=True, max_tokens=4096, fast=False, max_tool_iterations=2, agent_name="flight")
     raw = raw.strip()
     if raw.startswith("```"):
         raw = raw.split("```")[1]

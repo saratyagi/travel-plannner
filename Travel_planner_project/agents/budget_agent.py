@@ -58,7 +58,7 @@ async def calculate_budget(trip: TripRequest, flights: list, hotels: list) -> di
         f"Produce a detailed BudgetEstimate JSON."
     )
 
-    raw = await run_agent(BUDGET_SYSTEM, prompt, use_tools=False, max_tokens=2048, fast=True)
+    raw = await run_agent(BUDGET_SYSTEM, prompt, use_tools=False, max_tokens=2048, fast=True, agent_name="budget")
     raw = raw.strip()
     if raw.startswith("```"):
         raw = raw.split("```")[1]

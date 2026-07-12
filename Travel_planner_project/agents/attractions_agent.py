@@ -1,13 +1,8 @@
 import asyncio
 import json
-import os
-
-import httpx
 
 from agents.base import run_agent, USE_MOCK_DATA
-from tools.web_tools import execute_web_search
-
-_image_cache: dict[str, str | None] = {}
+from tools.web_tools import execute_web_search, execute_image_search
 
 EXTRACT_SYSTEM = """You are a travel expert. Given search results about a destination, extract the top 5 must-see attractions.
 
@@ -31,33 +26,9 @@ Rules:
 
 async def _image_search(query: str) -> str | None:
     if USE_MOCK_DATA:
-        from tools.mock_data import get_mock_image_url
+        from fixtures.mock_data import get_mock_image_url
         return get_mock_image_url(query)
-    if query in _image_cache:
-        return _image_cache[query]
-    api_key = os.environ.get("Serper_Api_Key", "")
-    if not api_key:
-        return None
-    try:
-        async with httpx.AsyncClient(timeout=8.0) as client:
-            resp = await client.post(
-                "https://google.serper.dev/images",
-                headers={"X-API-KEY": api_key, "Content-Type": "application/json"},
-                json={"q": query, "num": 5},
-            )
-            resp.raise_for_status()
-            images = resp.json().get("images", [])
-            result = None
-            for img in images:
-                url = img.get("imageUrl", "")
-                if url and url.startswith("http") and not url.endswith(".svg"):
-                    result = url
-                    break
-            _image_cache[query] = result
-            return result
-    except Exception:
-        _image_cache[query] = None
-        return None
+    return await execute_image_search(query)
 
 
 async def search_attractions(destination: str) -> list:
@@ -74,6 +45,7 @@ async def search_attractions(destination: str) -> list:
         use_tools=False,
         max_tokens=1024,
         fast=True,
+        agent_name="attractions",
     )
     raw = raw.strip().lstrip("```json").lstrip("```").rstrip("```").strip()
 
@@ -86,7 +58,6 @@ async def search_attractions(destination: str) -> list:
 
     places = places[:5]
 
-    # Fetch one image per attraction in parallel
     image_tasks = [
         _image_search(f"{p.get('name', '')} {destination} landmark")
         for p in places

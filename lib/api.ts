@@ -1,11 +1,11 @@
-import { PlannerEvent } from '@/types';
+import { ConversationMessage, PlannerEvent } from '@/types';
 
-const API_BASE = 'http://localhost:8000';
+const API_BASE = process.env.NEXT_PUBLIC_API_URL ?? 'http://localhost:8000';
 
 export async function* streamTripPlan(
   message: string,
   partialParams?: Record<string, unknown> | null,
-  conversationHistory?: string | null,
+  conversationHistory?: ConversationMessage[] | null,
 ): AsyncGenerator<PlannerEvent> {
   const body: Record<string, unknown> = { message };
   if (partialParams) body.partial_params = partialParams;

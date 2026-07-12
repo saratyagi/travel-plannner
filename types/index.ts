@@ -22,13 +22,18 @@ export interface TripParamsEvent {
   };
 }
 
+export interface ConversationMessage {
+  role: 'user' | 'assistant';
+  content: string;
+}
+
 export interface ClarificationEvent {
   type: 'clarification';
   clarification_type: 'hard' | 'soft';
   message: string;
   missing_fields: string[];
   partial_params: Record<string, unknown>;
-  conversation_history: string;
+  conversation_history: ConversationMessage[];
 }
 
 export interface Place {

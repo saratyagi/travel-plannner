@@ -3,7 +3,7 @@ from typing import AsyncGenerator, Optional
 
 from models.schemas import TripRequest
 from agents.attractions_agent import search_attractions
-from agents.orchestrator import (
+from agents.trip_params import (
     extract_trip_params, validate_fields, apply_defaults,
     resolve_dates, ask_hard_question, ask_soft_question,
 )
@@ -29,7 +29,10 @@ class TravelPlanner:
         # Build the full message context for the LLM
         full_message = user_message
         if conversation_history:
-            full_message = f"{conversation_history}\nUser's latest reply: {user_message}"
+            history_text = "\n".join(
+                f"{m['role'].capitalize()}: {m['content']}" for m in conversation_history
+            )
+            full_message = f"{history_text}\nUser: {user_message}"
 
         try:
             params = await extract_trip_params(full_message, partial=partial_params)
@@ -49,11 +52,11 @@ class TravelPlanner:
                 "message": question,
                 "missing_fields": hard_missing,
                 "partial_params": params,
-                "conversation_history": (
-                    f"{conversation_history}\nUser: {user_message}\nAssistant: {question}"
-                    if conversation_history
-                    else f"User: {user_message}\nAssistant: {question}"
-                ),
+                "conversation_history": [
+                    *(conversation_history or []),
+                    {"role": "user", "content": user_message},
+                    {"role": "assistant", "content": question},
+                ],
             }
             return
 
@@ -66,11 +69,11 @@ class TravelPlanner:
                 "message": question,
                 "missing_fields": soft_missing,
                 "partial_params": params,
-                "conversation_history": (
-                    f"{conversation_history}\nUser: {user_message}\nAssistant: {question}"
-                    if conversation_history
-                    else f"User: {user_message}\nAssistant: {question}"
-                ),
+                "conversation_history": [
+                    *(conversation_history or []),
+                    {"role": "user", "content": user_message},
+                    {"role": "assistant", "content": question},
+                ],
             }
             return
 

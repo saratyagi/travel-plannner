@@ -54,4 +54,4 @@ class BudgetEstimate(BaseModel):
 class PlanRequest(BaseModel):
     message: str
     partial_params: Optional[dict] = None
-    conversation_history: Optional[str] = None
+    conversation_history: Optional[list[dict]] = None
