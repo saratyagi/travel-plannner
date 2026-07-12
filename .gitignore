@@ -23,3 +23,9 @@ venv/
 # OS
 .DS_Store
 Thumbs.db
+
+# Generated / build artifacts
+tsconfig.tsbuildinfo
+inventory.json
+dependencies.json
+report.md

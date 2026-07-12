@@ -10,6 +10,7 @@ class SerperAdapter:
         self._api_key = api_key
         self._search_cache: TTLCache = TTLCache(maxsize=256, ttl=3600)
         self._fetch_cache: TTLCache = TTLCache(maxsize=256, ttl=3600)
+        self._image_cache: TTLCache = TTLCache(maxsize=128, ttl=3600)
 
     async def search(self, query: str) -> str:
         if query in self._search_cache:
@@ -59,6 +60,8 @@ class SerperAdapter:
             return f"Fetch error: {e}"
 
     async def search_images(self, query: str) -> str | None:
+        if query in self._image_cache:
+            return self._image_cache[query]
         if not self._api_key:
             return None
         try:
@@ -72,7 +75,10 @@ class SerperAdapter:
                 for img in resp.json().get("images", []):
                     url = img.get("imageUrl", "")
                     if url and url.startswith("http") and not url.endswith(".svg"):
+                        self._image_cache[query] = url
                         return url
+            self._image_cache[query] = None
             return None
         except Exception:
+            self._image_cache[query] = None
             return None
