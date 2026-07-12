@@ -2,7 +2,7 @@ import json
 import os
 import sys
 
-from fastapi import FastAPI
+from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import StreamingResponse
 
@@ -44,15 +44,17 @@ async def debug():
 
 
 @app.post("/api/plan")
-async def plan_trip(request: PlanRequest):
+async def plan_trip(body: PlanRequest, request: Request):
     planner = TravelPlanner()
 
     async def event_stream():
         async for event in planner.run(
-            user_message=request.message,
-            partial_params=request.partial_params,
-            conversation_history=request.conversation_history,
+            user_message=body.message,
+            partial_params=body.partial_params,
+            conversation_history=body.conversation_history,
         ):
+            if await request.is_disconnected():
+                break
             yield f"data: {json.dumps(event)}\n\n"
         yield "data: [DONE]\n\n"
 

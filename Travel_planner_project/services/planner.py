@@ -1,5 +1,5 @@
 import asyncio
-from typing import AsyncGenerator, Optional
+from typing import AsyncGenerator, Callable, NamedTuple, Optional
 
 from models.schemas import TripRequest
 from agents.attractions_agent import search_attractions
@@ -12,6 +12,19 @@ from agents.hotel_agent import search_hotels
 from agents.budget_agent import calculate_budget
 from agents.report_generator import generate_report
 from tools.currency import get_usd_to_inr
+
+
+class _SearchStep(NamedTuple):
+    agent: str
+    start_msg: str
+    done_msg_tpl: str  # use {n} for result count
+    fn: Callable
+
+# Parallel search phase: add new agents here without touching TravelPlanner.run()
+_PARALLEL_SEARCH_STEPS: list[_SearchStep] = [
+    _SearchStep("flight", "Searching for flights…",  "Found {n} flight option(s)",  search_flights),
+    _SearchStep("hotel",  "Searching for hotels…",   "Found {n} hotel option(s)",   search_hotels),
+]
 
 
 class TravelPlanner:
@@ -102,25 +115,25 @@ class TravelPlanner:
                "message": f"Planning: {trip.origin} → {trip.destination}"}
         yield {"type": "trip_params", "data": trip.dict()}
 
-        # ── Step 4: Flight + Hotel in parallel ─────────────────────────────
-        yield {"type": "progress", "agent": "flight", "status": "running",
-               "message": "Searching for flights…"}
-        yield {"type": "progress", "agent": "hotel", "status": "running",
-               "message": "Searching for hotels…"}
+        # ── Step 4: Parallel search (flight, hotel, …) ─────────────────────
+        for step in _PARALLEL_SEARCH_STEPS:
+            yield {"type": "progress", "agent": step.agent, "status": "running",
+                   "message": step.start_msg}
 
-        flights_result, hotels_result = await asyncio.gather(
-            search_flights(trip),
-            search_hotels(trip),
+        raw_results = await asyncio.gather(
+            *[step.fn(trip) for step in _PARALLEL_SEARCH_STEPS],
             return_exceptions=True,
         )
 
-        flights = flights_result if not isinstance(flights_result, Exception) else []
-        hotels = hotels_result if not isinstance(hotels_result, Exception) else []
+        search_results: list[list] = [
+            r if not isinstance(r, Exception) else []
+            for r in raw_results
+        ]
+        for step, result in zip(_PARALLEL_SEARCH_STEPS, search_results):
+            yield {"type": "progress", "agent": step.agent, "status": "done",
+                   "message": step.done_msg_tpl.format(n=len(result))}
 
-        yield {"type": "progress", "agent": "flight", "status": "done",
-               "message": f"Found {len(flights)} flight option(s)"}
-        yield {"type": "progress", "agent": "hotel", "status": "done",
-               "message": f"Found {len(hotels)} hotel option(s)"}
+        flights, hotels = search_results[0], search_results[1]
 
         # ── Step 5: Budget ──────────────────────────────────────────────────
         yield {"type": "progress", "agent": "budget", "status": "running",

@@ -91,6 +91,7 @@ async def run_agent(
     fast: bool = False,
     max_tool_iterations: int = 3,
     agent_name: str = "",
+    adapter: AnthropicAdapter | None = None,
 ) -> str:
     if USE_MOCK_DATA:
         delay = _MOCK_DELAYS.get(agent_name, 0.0)
@@ -98,13 +99,14 @@ async def run_agent(
             await asyncio.sleep(delay)
         return _mock_run_agent(agent_name, user_message)
 
+    llm = adapter or _llm_adapter
     messages: list[dict] = [{"role": "user", "content": user_message}]
     tools = SEARCH_TOOLS if use_tools else []
     model = FAST_MODEL if fast else SEARCH_MODEL
     iterations = 0
 
     while True:
-        response = await _llm_adapter.complete(
+        response = await llm.complete(
             model=model,
             system=system_prompt,
             messages=messages,
