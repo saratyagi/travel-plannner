@@ -1,6 +1,5 @@
 import json
 from datetime import datetime, timedelta
-from calendar import month_name
 
 from agents.base import run_agent
 
@@ -95,7 +94,7 @@ def resolve_dates(params: dict) -> dict:
 # ── LLM helpers ──────────────────────────────────────────────────────────────
 
 async def extract_trip_params(message: str, partial: dict | None = None) -> dict:
-    raw = await run_agent(EXTRACT_SYSTEM, message, use_tools=False, max_tokens=512, fast=True)
+    raw = await run_agent(EXTRACT_SYSTEM, message, use_tools=False, max_tokens=512, fast=True, agent_name="extract")
     raw = raw.strip().lstrip("```json").lstrip("```").rstrip("```").strip()
     try:
         extracted = json.loads(raw)
@@ -121,7 +120,7 @@ async def ask_hard_question(params: dict, missing: list[str]) -> str:
         context.append(f"from: {params['origin']}")
     ctx_str = f"Known so far: {', '.join(context)}. " if context else ""
     prompt = f"{ctx_str}Missing: {', '.join(missing)}. Ask a natural follow-up question."
-    return await run_agent(HARD_QUESTION_SYSTEM, prompt, use_tools=False, max_tokens=128, fast=True)
+    return await run_agent(HARD_QUESTION_SYSTEM, prompt, use_tools=False, max_tokens=128, fast=True, agent_name="clarify_hard")
 
 
 async def ask_soft_question(params: dict, missing: list[str]) -> str:
@@ -131,4 +130,4 @@ async def ask_soft_question(params: dict, missing: list[str]) -> str:
         f"({params.get('trip_length_days', '?')} days)."
     )
     prompt = f"{known} Still missing (soft): {', '.join(missing)}. Ask a combined friendly question with a skip option."
-    return await run_agent(SOFT_QUESTION_SYSTEM, prompt, use_tools=False, max_tokens=128, fast=True)
+    return await run_agent(SOFT_QUESTION_SYSTEM, prompt, use_tools=False, max_tokens=128, fast=True, agent_name="clarify_soft")

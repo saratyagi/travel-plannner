@@ -1,25 +1,12 @@
 'use client';
 
-import { useState, useCallback, useRef, useEffect } from 'react';
 import dynamic from 'next/dynamic';
-import { AgentName, AgentState, Place } from '@/types';
 import AgentProgress from '@/components/AgentProgress';
 import TripReport from '@/components/TripReport';
 import AttractionsSidebar from '@/components/AttractionsSidebar';
-import { streamTripPlan } from '@/lib/api';
+import { useTripPlanner } from '@/hooks/useTripPlanner';
 
 const DestinationGlobe = dynamic(() => import('@/components/DestinationGlobe'), { ssr: false });
-
-const INITIAL_AGENTS: Record<AgentName, AgentState> = {
-  orchestrator: { status: 'idle', message: '' },
-  flight:       { status: 'idle', message: '' },
-  hotel:        { status: 'idle', message: '' },
-  budget:       { status: 'idle', message: '' },
-  report:       { status: 'idle', message: '' },
-};
-
-type AppStatus = 'idle' | 'planning' | 'clarifying' | 'done' | 'error';
-type PlanningPhase = 'globe' | 'plane' | null;
 
 const EXAMPLE_TRIPS = [
   'I want to fly from New York to Tokyo for 10 days in August 2026, economy class, 2 travelers.',
@@ -27,197 +14,21 @@ const EXAMPLE_TRIPS = [
   'Dubai to Bali, September 2026, 2 weeks, business class, luxury hotels, budget around $8000.',
 ];
 
-const TODAY = new Date().toISOString().split('T')[0];
-
-/** Extract destination from natural language before the backend replies. */
-function extractDestination(text: string): string | null {
-  // "from X to Y" → Y
-  let m = text.match(/\bfrom\s+[\w\s]+?\s+to\s+([A-Z][A-Za-z\s]+?)(?=\s+for\b|\s+in\b|\s+on\b|\s+from\b|\s+,|,|\.|$)/i);
-  if (m?.[1]?.trim()) return m[1].trim();
-
-  // "trip/travel/fly/going/head to Y"
-  m = text.match(/\b(?:trip|travel|fly(?:ing)?|going|head(?:ing)?|visit(?:ing)?|explore)\s+(?:from\s+\S+\s+)?to\s+([A-Z][A-Za-z\s]+?)(?=\s+for\b|\s+in\b|\s+on\b|\s+,|,|\.|$)/i);
-  if (m?.[1]?.trim()) return m[1].trim();
-
-  // plain "to Y" with capital letter
-  m = text.match(/\bto\s+([A-Z][a-z]+(?:\s+[A-Z][a-z]+)*)(?=\s+for\b|\s+in\b|\s+on\b|\s+,|,|\s+\d|\.| |$)/);
-  if (m?.[1]?.trim()) return m[1].trim();
-
-  // "X to Y" at start (e.g. "Dubai to Bali")
-  m = text.match(/^([A-Za-z]+(?:\s[A-Za-z]+)?)\s+to\s+([A-Za-z]+(?:\s[A-Za-z]+)?)/i);
-  if (m?.[2]?.trim()) return m[2].trim();
-
-  return null;
-}
-
 export default function Home() {
-  const [input, setInput] = useState('');
-  // Upfront form fields — collected before submitting
-  const [startDate, setStartDate] = useState('');
-  const [endDate, setEndDate] = useState('');
-  const [travelers, setTravelers] = useState(2);
-
-  const [status, setStatus] = useState<AppStatus>('idle');
-  const [planningPhase, setPlanningPhase] = useState<PlanningPhase>(null);
-  const [agents, setAgents] = useState<Record<AgentName, AgentState>>(INITIAL_AGENTS);
-  const [report, setReport] = useState('');
-  const [clarification, setClarification] = useState('');
-  const [clarificationAnswer, setClarificationAnswer] = useState('');
-  const [clarificationMissingFields, setClarificationMissingFields] = useState<string[]>([]);
-  const [partialParams, setPartialParams] = useState<Record<string, unknown> | null>(null);
-  const [conversationHistory, setConversationHistory] = useState<string | null>(null);
-  const [destination, setDestination] = useState<string | null>(null);
-  const [places, setPlaces] = useState<Place[]>([]);
-  const [attractionsLoading, setAttractionsLoading] = useState(false);
-  const [error, setError] = useState('');
-
-  const textareaRef = useRef<HTMLTextAreaElement>(null);
-  const clarificationRef = useRef<HTMLTextAreaElement>(null);
-  const planningStartRef = useRef<number>(0);
-  const showReportTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
-
-  // Globe phase automatically transitions to plane after 3 seconds
-  useEffect(() => {
-    if (planningPhase !== 'globe') return;
-    const t = setTimeout(() => setPlanningPhase('plane'), 3000);
-    return () => clearTimeout(t);
-  }, [planningPhase]);
-
-  const updateAgent = useCallback((agent: AgentName, update: Partial<AgentState>) => {
-    setAgents((prev) => ({ ...prev, [agent]: { ...prev[agent], ...update } }));
-  }, []);
-
-  const runStream = useCallback(async (
-    message: string,
-    params?: Record<string, unknown> | null,
-    history?: string | null,
-  ) => {
-    setStatus('planning');
-    setPlanningPhase('globe');
-    planningStartRef.current = Date.now();
-    setAgents(INITIAL_AGENTS);
-    setReport('');
-    setClarification('');
-    setError('');
-    setPlaces([]);
-    setAttractionsLoading(true);
-    if (showReportTimerRef.current) clearTimeout(showReportTimerRef.current);
-
-    try {
-      for await (const event of streamTripPlan(message, params, history)) {
-        switch (event.type) {
-          case 'progress':
-            updateAgent(event.agent, { status: event.status, message: event.message });
-            break;
-
-          case 'trip_params':
-            if (event.data.destination) setDestination(event.data.destination);
-            break;
-
-          case 'clarification':
-            setPlanningPhase(null);
-            if (showReportTimerRef.current) clearTimeout(showReportTimerRef.current);
-            setClarification(event.message);
-            setClarificationMissingFields(event.missing_fields ?? []);
-            setPartialParams(event.partial_params ?? null);
-            setConversationHistory(event.conversation_history ?? null);
-            setClarificationAnswer('');
-            setStatus('clarifying');
-            setTimeout(() => clarificationRef.current?.focus(), 50);
-            return;
-
-          case 'complete': {
-            // Hold results until both animations have played (min 4.5 s: 3 s globe + 1.5 s plane)
-            const elapsed = Date.now() - planningStartRef.current;
-            const MIN_MS = 4500;
-            const delay = Math.max(0, MIN_MS - elapsed);
-            const reportText = event.report;
-            showReportTimerRef.current = setTimeout(() => {
-              setReport(reportText);
-              setStatus('done');
-              setPlanningPhase(null);
-            }, delay);
-            break;
-          }
-
-          case 'attractions':
-            setPlaces(event.places ?? []);
-            setAttractionsLoading(false);
-            break;
-
-          case 'error':
-            setPlanningPhase(null);
-            if (showReportTimerRef.current) clearTimeout(showReportTimerRef.current);
-            setError(event.message);
-            setAttractionsLoading(false);
-            setStatus('error');
-            return;
-        }
-      }
-    } catch (err) {
-      setPlanningPhase(null);
-      if (showReportTimerRef.current) clearTimeout(showReportTimerRef.current);
-      setError(err instanceof Error ? err.message : 'Unknown error. Is the backend running?');
-      setStatus('error');
-    } finally {
-      setAttractionsLoading(false);
-    }
-  }, [updateAgent]);
-
-  const handleSubmit = useCallback(() => {
-    if (!input.trim() || status === 'planning') return;
-    setConversationHistory(null);
-
-    const detected = extractDestination(input.trim());
-    setDestination(detected);
-
-    // Pass upfront form values as partial params so the backend doesn't need to ask for them
-    const partial: Record<string, unknown> = { travelers };
-    if (startDate) partial.start_date = startDate;
-    if (endDate) partial.end_date = endDate;
-    setPartialParams(partial);
-
-    runStream(input.trim(), partial);
-  }, [input, startDate, endDate, travelers, status, runStream]);
-
-  // Only show date pickers in clarification when dates are the sole hard-missing field.
-  // When origin is also missing, show a text area so the user can answer both at once.
-  const isDateClarification =
-    clarificationMissingFields.includes('dates') &&
-    !clarificationMissingFields.includes('origin');
-
-  const handleClarificationSubmit = useCallback(() => {
-    if (status === 'planning') return;
-    if (isDateClarification) {
-      if (!startDate || !endDate) return;
-      runStream(`Departing ${startDate}, returning ${endDate}`, partialParams, conversationHistory);
-    } else {
-      if (!clarificationAnswer.trim()) return;
-      runStream(clarificationAnswer.trim(), partialParams, conversationHistory);
-    }
-  }, [status, isDateClarification, startDate, endDate, clarificationAnswer, partialParams, conversationHistory, runStream]);
-
-  const handleReset = () => {
-    if (showReportTimerRef.current) clearTimeout(showReportTimerRef.current);
-    setStatus('idle');
-    setInput('');
-    setClarificationAnswer('');
-    setStartDate('');
-    setEndDate('');
-    setTravelers(2);
-    setPlanningPhase(null);
-    setAgents(INITIAL_AGENTS);
-    setReport('');
-    setClarification('');
-    setClarificationMissingFields([]);
-    setPartialParams(null);
-    setConversationHistory(null);
-    setDestination(null);
-    setPlaces([]);
-    setAttractionsLoading(false);
-    setError('');
-    textareaRef.current?.focus();
-  };
+  const {
+    input, setInput,
+    startDate, setStartDate,
+    endDate, setEndDate,
+    travelers, setTravelers,
+    status, planningPhase, agents,
+    report, clarification,
+    clarificationAnswer, setClarificationAnswer,
+    clarificationMissingFields,
+    destination, places, attractionsLoading,
+    error, isDateClarification, today,
+    handleSubmit, handleClarificationSubmit, handleReset,
+    textareaRef, clarificationRef,
+  } = useTripPlanner();
 
   return (
     <main className="min-h-screen bg-gradient-to-br from-slate-950 via-slate-900 to-blue-950">
@@ -253,7 +64,6 @@ export default function Home() {
             </div>
 
             <div className="bg-white/5 border border-white/10 rounded-2xl p-6 mb-6">
-              {/* Destination / free-form text */}
               <textarea
                 ref={textareaRef}
                 value={input}
@@ -266,7 +76,7 @@ export default function Home() {
                 autoFocus
               />
 
-              {/* ── Calendar: departure + return date pickers ────────── */}
+              {/* Calendar */}
               <div className="mt-4 pt-4 border-t border-white/10">
                 <p className="text-white/40 text-xs mb-3">
                   Travel dates <span className="text-white/25">(optional — we&apos;ll ask if you skip)</span>
@@ -277,7 +87,7 @@ export default function Home() {
                     <input
                       type="date"
                       value={startDate}
-                      min={TODAY}
+                      min={today}
                       onChange={(e) => {
                         setStartDate(e.target.value);
                         if (endDate && e.target.value > endDate) setEndDate('');
@@ -291,7 +101,7 @@ export default function Home() {
                     <input
                       type="date"
                       value={endDate}
-                      min={startDate || TODAY}
+                      min={startDate || today}
                       onChange={(e) => setEndDate(e.target.value)}
                       className="w-full bg-slate-800 border border-white/20 text-white rounded-xl px-4 py-3 text-sm outline-none focus:border-blue-500 transition-colors cursor-pointer"
                       style={{ colorScheme: 'dark' }}
@@ -308,7 +118,7 @@ export default function Home() {
                 )}
               </div>
 
-              {/* ── Travelers counter + submit ────────────────────────── */}
+              {/* Travelers + submit */}
               <div className="mt-4 pt-4 border-t border-white/10 flex items-center justify-between flex-wrap gap-4">
                 <div className="flex items-center gap-3">
                   <span className="text-white/50 text-sm">Travelers</span>
@@ -369,7 +179,6 @@ export default function Home() {
         {status === 'planning' && (
           <div className="animate-fade-in">
 
-            {/* PHASE 1 — Globe marks the destination (3 s) */}
             {planningPhase === 'globe' && (
               <div className="flex flex-col items-center justify-center min-h-[420px]">
                 <p className="text-white/40 text-xs tracking-widest uppercase mb-2">Finding your destination</p>
@@ -380,10 +189,8 @@ export default function Home() {
               </div>
             )}
 
-            {/* PHASE 2 — Plane flies while agents work */}
             {planningPhase === 'plane' && (
               <div>
-                {/* Plane + contrail + clouds */}
                 <div className="relative w-full h-20 mb-8 overflow-hidden">
                   <div className="absolute inset-0 flex items-center">
                     {[10, 30, 55, 75, 90].map((left, i) => (
@@ -416,7 +223,6 @@ export default function Home() {
                   </div>
                 </div>
 
-                {/* Globe (still showing) + agent progress cards */}
                 <div className="flex flex-col lg:flex-row gap-10 items-center lg:items-start justify-center">
                   {destination && (
                     <div className="flex-shrink-0">
@@ -460,7 +266,7 @@ export default function Home() {
                       <input
                         type="date"
                         value={startDate}
-                        min={TODAY}
+                        min={today}
                         onChange={(e) => {
                           setStartDate(e.target.value);
                           if (endDate && e.target.value > endDate) setEndDate('');
@@ -474,7 +280,7 @@ export default function Home() {
                       <input
                         type="date"
                         value={endDate}
-                        min={startDate || TODAY}
+                        min={startDate || today}
                         onChange={(e) => setEndDate(e.target.value)}
                         className="w-full bg-slate-800 border border-white/20 text-white rounded-xl px-4 py-3 text-sm outline-none focus:border-blue-500 transition-colors cursor-pointer"
                         style={{ colorScheme: 'dark' }}

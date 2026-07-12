@@ -77,4 +77,4 @@ async def generate_report(
         f"If any assumptions were applied, add a line '*Assumed: [assumption list]*' directly under the trip header."
     )
 
-    return await run_agent(system, prompt, use_tools=False, max_tokens=4096, fast=True)
+    return await run_agent(system, prompt, use_tools=False, max_tokens=4096, fast=True, agent_name="report")
