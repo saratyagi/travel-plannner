@@ -30,3 +30,9 @@ inventory.json
 dependencies.json
 report.md
 architecture-reviewer.zip
+
+# MCP server — local trip database (each user has their own)
+travel-mcp/trips.db
+
+# Runtime logs
+*.log

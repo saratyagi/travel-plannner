@@ -1,0 +1,8 @@
+{
+  "mcpServers": {
+    "travel-planner": {
+      "command": "D:/Travel Planner/travel-mcp/.venv/Scripts/python.exe",
+      "args": ["D:/Travel Planner/travel-mcp/server.py"]
+    }
+  }
+}
