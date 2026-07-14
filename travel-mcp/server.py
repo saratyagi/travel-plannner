@@ -10,6 +10,7 @@ import sys
 import uuid
 
 from mcp.server.fastmcp import FastMCP
+from mcp.server.transport_security import TransportSecuritySettings
 
 from planner_client import call_plan
 from storage import (
@@ -20,7 +21,11 @@ from storage import (
 
 BACKEND_URL = "http://localhost:8001"
 
-mcp = FastMCP("travel-planner", port=8002)
+mcp = FastMCP(
+    "travel-planner",
+    port=8002,
+    transport_security=TransportSecuritySettings(enable_dns_rebinding_protection=False),
+)
 
 _INJECTION_RE = re.compile(
     r"(ignore\s+previous|system\s*:|\[INST\]|<\|im_start\|>)",
